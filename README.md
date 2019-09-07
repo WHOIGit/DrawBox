@@ -1,3 +1,5 @@
+![Screenshot of DrawBox](/screenshot.png?raw=true "Screenshot")
+
 # DrawBox
 
 This project implements a quick-and-dirty UI for manually annotating a series of images with bounding boxes.
