@@ -1,9 +1,26 @@
 import math
-import json
 import os
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+
+def toDarknetRect(r, iw, ih):
+    clip = lambda x: max(min(x, 1.0), 0.0)
+    return (
+        clip((r.left() + (r.width() / 2)) / iw),
+        clip((r.top() + (r.height() / 2)) / ih),
+        clip(r.width() / iw),
+        clip(r.height() / ih),
+    )
+
+def fromDarknetRect(r, iw, ih):
+    cx, cy, w, h = r
+    return QtCore.QRect(
+        iw * (cx - w / 2),
+        ih * (cy - h / 2),
+        iw * w,
+        ih * h,
+    )
 
 class Window(QtWidgets.QMainWindow):
     def __init__(self, args):
@@ -16,21 +33,18 @@ class Window(QtWidgets.QMainWindow):
         self.rects = [[] for _ in range(len(args.files))]
         self.recti = -1
 
-        # Try to restore saved state
-        self.unmatched = {}
-        if os.path.exists(args.output):
-            namemap = \
-                { os.path.basename(fn): i for i, fn in enumerate(self.files) }
-            with open(args.output, 'r') as f:
-                restored = json.load(f)
-            for name, rects in restored.items():
-                if name in namemap:
-                    for x, y, w, h in rects:
-                        rect = QtCore.QRect(x, y, w, h)
-                        self.rects[namemap[name]].append(rect)
-                else:
-                    # Don't lose any boxes
-                    self.unmatched[name] = rects
+        for i, file in enumerate(self.files):
+            prefix, _ = os.path.splitext(file)
+            try:
+                with open(prefix + '.txt') as f:
+                    for line in f:
+                        clss, x, y, width, height = line.rstrip().split(' ')
+                        assert clss == '0'
+                        x, y = float(x), float(y)
+                        width, height = float(width), float(height)
+                        self.rects[i].append((x, y, width, height))
+            except:
+                continue
 
         self.canvas = Canvas()
         self.canvas.rectDrawn.connect(self.handle_rect_drawn)
@@ -41,27 +55,25 @@ class Window(QtWidgets.QMainWindow):
         self.load_image()
 
     def save_output(self):
-        rectmap = {}
-        for fn, rects in zip(self.files, self.rects):
-            trects = []
-            for r in rects:
-                x, y = r.topLeft().x(), r.topLeft().y()
-                w, h = r.width(), r.height()
-                trects.append((x, y, w, h))
-            rectmap[os.path.basename(fn)] = trects
+        if self.args.read_only:
+            return
+        
+        prefix, _ = os.path.splitext(self.files[self.filei])
+        with open(prefix + '.txt', 'w') as f:
+            for r in self.rects[self.filei]:
+                f.write('%i %.5f %.5f %.5f %.5f\n' % (0, *r))
 
-        rectmap.update(self.unmatched)
-
-        with open(args.output, 'w') as f:
-            json.dump(rectmap, f)
+        #with open(args.output, 'w') as f:
+        #    json.dump(rectmap, f)
 
     def handle_rect_drawn(self, rect):
-        self.rects[self.filei].append(rect)
+        self.rects[self.filei].append(toDarknetRect(rect, *self.imagesize))
         self.recti = len(self.rects[self.filei]) - 1
         self.update_rects()
     
     def handle_rect_resized(self, recti, rect):
-        self.rects[self.filei][self.recti] = rect
+        self.rects[self.filei][self.recti] = \
+            toDarknetRect(rect, *self.imagesize)
         self.update_rects()
 
     def handle_rect_selected(self, recti):
@@ -70,6 +82,7 @@ class Window(QtWidgets.QMainWindow):
 
     def load_image(self):
         image = QtGui.QImage(self.files[self.filei])
+        self.imagesize = image.width(), image.height()
         self.canvas.image = image
         
         self.recti = -1
@@ -79,7 +92,10 @@ class Window(QtWidgets.QMainWindow):
         self.canvas.update()
     
     def update_rects(self):
-        self.canvas.rects = self.rects[self.filei]
+        self.canvas.rects = [
+            fromDarknetRect(r, *self.imagesize)
+            for r in self.rects[self.filei]
+        ]
         self.canvas.recti = self.recti
         self.canvas.update()
         self.save_output()
@@ -226,7 +242,7 @@ if __name__ == '__main__':
     import sys
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-o', '--output', required=True)
+    parser.add_argument('--read-only', action='store_true')
     parser.add_argument('files', nargs='+')
     args = parser.parse_args()
 
